@@ -351,7 +351,7 @@ def chunk_kda_fwd_kernel_inter_solve_fused(
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
         for num_warps in [1, 2, 4, 8]
-        for num_stages in [2, 3, 4]
+        for num_stages in [1]
     ],
     key=['BK', 'NC', 'BT'],
     **autotune_cache_kwargs,
@@ -627,7 +627,7 @@ def chunk_kda_bwd_kernel_intra(
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
         for num_warps in [1, 2, 4, 8]
-        for num_stages in [2, 3, 4]
+        for num_stages in [1]
     ],
     key=["BT", "BC"],
     **autotune_cache_kwargs,

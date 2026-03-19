@@ -33,10 +33,9 @@ class ChunkKDAFunction(torch.autograd.Function):
         cu_seqlens_cpu: torch.LongTensor | None = None,
         safe_gate: bool = False,
         lower_bound: float | None = None,
-        disable_recompute: bool = False,
+        disable_recompute: bool = True,
         return_intermediate_states: bool = False,
         cp_context: FLACPContext | None = None,
-        transpose_state_layout: bool = False,
     ):
         chunk_size = 64
 
@@ -49,13 +48,13 @@ class ChunkKDAFunction(torch.autograd.Function):
         chunk_indices = prepare_chunk_indices(
             cu_seqlens, chunk_size, cu_seqlens_cpu=cu_seqlens_cpu) if cu_seqlens is not None else None
 
-        g_input = g
+        g_org = g if use_gate_in_kernel else None
 
-        (o, final_state, g_cumsum, Aqk, Akk, w, u, qg, kg, v_new, h, initial_state) = chunk_kda_fwd(
+        (o, final_state, g, Aqk, Akk, w, u, qg, kg, v_new, h, initial_state) = chunk_kda_fwd(
             q=q,
             k=k,
             v=v,
-            g=g_input,
+            g=g,
             beta=beta,
             scale=scale,
             initial_state=initial_state,
@@ -71,7 +70,6 @@ class ChunkKDAFunction(torch.autograd.Function):
             disable_recompute=disable_recompute,
             return_intermediate_states=return_intermediate_states,
             cp_context=cp_context,
-            transpose_state_layout=transpose_state_layout,
         )
 
         if return_intermediate_states:
@@ -80,7 +78,7 @@ class ChunkKDAFunction(torch.autograd.Function):
             return o.type_as(q), final_state, h
 
         ctx.save_for_backward(
-            q, q_rstd, k, k_rstd, v, g_cumsum, g_input, beta, A_log, dt_bias, Aqk, Akk,
+            q, q_rstd, k, k_rstd, v, g, g_org, beta, A_log, dt_bias, Aqk, Akk,
             w, u, qg, kg, v_new, h,
             initial_state, cu_seqlens, chunk_indices
         )
@@ -92,7 +90,6 @@ class ChunkKDAFunction(torch.autograd.Function):
         ctx.use_gate_in_kernel = use_gate_in_kernel
         ctx.disable_recompute = disable_recompute
         ctx.cp_context = cp_context
-        ctx.transpose_state_layout = transpose_state_layout
         return o.type_as(q), final_state
 
     @staticmethod
@@ -103,7 +100,7 @@ class ChunkKDAFunction(torch.autograd.Function):
         do: torch.Tensor,
         dht: torch.Tensor,
     ):
-        (q, q_rstd, k, k_rstd, v, g_cumsum, g_input, beta, A_log, dt_bias, Aqk, Akk,
+        (q, q_rstd, k, k_rstd, v, g, g_org, beta, A_log, dt_bias, Aqk, Akk,
          w, u, qg, kg, v_new, h,
          initial_state, cu_seqlens, chunk_indices) = (
             ctx.saved_tensors
@@ -113,7 +110,7 @@ class ChunkKDAFunction(torch.autograd.Function):
             q=q,
             k=k,
             v=v,
-            g=g_cumsum,
+            g=g,
             beta=beta,
             Aqk=Aqk,
             Akk=Akk,
@@ -125,20 +122,19 @@ class ChunkKDAFunction(torch.autograd.Function):
             chunk_indices=chunk_indices,
             chunk_size=ctx.chunk_size,
             safe_gate=ctx.safe_gate,
-            g_org=g_input if ctx.use_gate_in_kernel else None, lower_bound=ctx.lower_bound,
+            g_org=g_org, lower_bound=ctx.lower_bound,
             use_gate_in_kernel=ctx.use_gate_in_kernel,
             A_log=A_log, dt_bias=dt_bias,
             disable_recompute=ctx.disable_recompute,
             w=w, u=u, qg=qg, kg=kg, v_new=v_new, h=h,
             cp_context=ctx.cp_context,
-            transpose_state_layout=ctx.transpose_state_layout,
         )
         if ctx.use_qk_l2norm_in_kernel:
             dq = l2norm_bwd(q, q_rstd, dq)
             dk = l2norm_bwd(k, k_rstd, dk)
 
-        return (dq.to(q), dk.to(k), dv.to(v), dg.to(g_input), db.to(beta), dA, dbias, None, dh0,
-                None, None, None, None, None, None, None, None, None, None, None)
+        return (dq.to(q), dk.to(k), dv.to(v), dg.to(g), db.to(beta), dA, dbias, None, dh0,
+                None, None, None, None, None, None, None, None, None, None)
 
 
 @torch.compiler.disable
@@ -157,10 +153,9 @@ def chunk_kda(
     cu_seqlens_cpu: torch.LongTensor | None = None,
     safe_gate: bool = False,
     lower_bound: float | None = None,
-    disable_recompute: bool = False,
+    disable_recompute: bool = True,
     return_intermediate_states: bool = False,
     cp_context: FLACPContext = None,
-    transpose_state_layout: bool = False,
     **kwargs,
 ):
     r"""
@@ -334,5 +329,4 @@ def chunk_kda(
         disable_recompute,
         return_intermediate_states,
         cp_context,
-        transpose_state_layout,
     )
